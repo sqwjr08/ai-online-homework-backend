@@ -9,6 +9,7 @@ dependencies = [
     "bcrypt>=5.0.0,<6.0.0",
     "email-validator>=2.2.0",
     "fastapi>=0.141.1,<0.142.0",
+    "pillow>=12.3.0,<13.0.0",
     "pymongo>=4.13.0,<5.0.0,!=4.15.0",
     "pwdlib[argon2,bcrypt]>=0.3.1,<0.4.0",
     "pydantic>=2.13.5,<3.0.0",

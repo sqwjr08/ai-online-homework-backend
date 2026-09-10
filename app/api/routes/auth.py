@@ -10,7 +10,10 @@ from app.services.users import create_account
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-@router.post("/login", response_model=TokenResponse)
+@router.post("/login", response_model=TokenResponse, responses={
+    401: {"description": "Invalid or concurrently changed credentials"},
+    403: {"description": "Account disabled"},
+})
 async def login(payload: LoginRequest) -> TokenResponse:
     user = await User.find_one(User.username == payload.username)
     valid, updated_hash = (False, None)
@@ -66,7 +69,7 @@ async def login(payload: LoginRequest) -> TokenResponse:
     return TokenResponse(access_token=token)
 
 
-@router.get("/me", response_model=UserRead)
+@router.get("/me", response_model=UserRead, responses={401: {"description": "Not authenticated or token revoked"}})
 async def me(current_user: User = Depends(get_current_user)) -> User:
     return current_user
 

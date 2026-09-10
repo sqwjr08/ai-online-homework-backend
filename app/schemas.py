@@ -1,9 +1,10 @@
 import unicodedata
-from datetime import datetime
+from decimal import Decimal
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 
 from beanie.odm.fields import PydanticObjectId
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models import AssignmentStatus, SubmissionStatus, UserRole
 
@@ -15,6 +16,11 @@ Password = Annotated[str, Field(min_length=4, max_length=128)]
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+class ImageUploadRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str
 
 
 class LoginRequest(BaseModel):
@@ -113,12 +119,40 @@ class ClassJoinRequest(BaseModel):
         return value.strip().upper() if isinstance(value, str) else value
 
 
+QuestionPrompt = Annotated[str, Field(min_length=1, max_length=10_000)]
+QuestionAnswer = Annotated[str, Field(min_length=1, max_length=20_000)]
+QuestionScore = Annotated[float, Field(gt=0, allow_inf_nan=False, strict=True)]
+QuestionRubric = Annotated[str | None, Field(min_length=1, max_length=5_000)]
+
+
 class QuestionCreate(BaseModel):
-    prompt: Annotated[str, Field(min_length=1)]
-    reference_answer: Annotated[str, Field(min_length=1)]
-    max_score: Annotated[float, Field(gt=0)]
-    rubric: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: QuestionPrompt
+    reference_answer: QuestionAnswer
+    max_score: QuestionScore
+    rubric: QuestionRubric = None
     image_urls: list[str] = Field(default_factory=list)
+
+    @field_validator("prompt", "reference_answer", "rubric", mode="before")
+    @classmethod
+    def normalize_question_text(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
+class QuestionUpdate(QuestionCreate):
+    prompt: QuestionPrompt | None = None
+    reference_answer: QuestionAnswer | None = None
+    max_score: QuestionScore | None = None
+
+    @model_validator(mode="after")
+    def validate_patch(self) -> "QuestionUpdate":
+        if not self.model_fields_set:
+            raise ValueError("At least one question field is required")
+        for name in ("prompt", "reference_answer", "max_score"):
+            if name in self.model_fields_set and getattr(self, name) is None:
+                raise ValueError(f"{name} cannot be null")
+        return self
 
 
 class QuestionRead(BaseModel):
@@ -129,44 +163,127 @@ class QuestionRead(BaseModel):
     rubric: str | None
     image_urls: list[str]
     created_by: PydanticObjectId
+    is_active: bool
     created_at: datetime
+    updated_at: datetime
+
+
+class QuestionPage(BaseModel):
+    items: list[QuestionRead]
+    total: int
+    page: int
+    page_size: int
 
 
 class AssignmentQuestionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     question_id: PydanticObjectId
 
 
-class AssignmentCreate(BaseModel):
+class AssignmentFields(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     title: Annotated[str, Field(min_length=1, max_length=200)]
     description: str | None = None
-    class_id: PydanticObjectId
     questions: list[AssignmentQuestionCreate]
     due_at: datetime | None = None
-    status: AssignmentStatus = AssignmentStatus.published
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def normalize_title(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("due_at")
+    @classmethod
+    def normalize_deadline(cls, value):
+        if value is None:
+            return None
+        if value.utcoffset() is None:
+            raise ValueError("due_at must include a timezone")
+        value = value.astimezone(UTC)
+        return value.replace(microsecond=value.microsecond // 1000 * 1000)
 
 
-class AssignmentRead(BaseModel):
+class AssignmentCreate(AssignmentFields):
+    class_id: PydanticObjectId
+    status: Literal[AssignmentStatus.draft, AssignmentStatus.published] = AssignmentStatus.published
+
+
+class AssignmentUpdate(AssignmentFields):
+    title: Annotated[str | None, Field(min_length=1, max_length=200)] = None
+    questions: list[AssignmentQuestionCreate] | None = None
+
+    @model_validator(mode="after")
+    def validate_patch(self) -> "AssignmentUpdate":
+        if not self.model_fields_set:
+            raise ValueError("At least one assignment field is required")
+        for name in ("title", "questions"):
+            if name in self.model_fields_set and getattr(self, name) is None:
+                raise ValueError(f"{name} cannot be null")
+        return self
+
+
+class StudentAssignmentQuestionRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    question_id: PydanticObjectId
+    position: int
+    prompt: str
+    image_urls: list[str]
+    max_score: float
+
+
+class TeacherAssignmentQuestionRead(StudentAssignmentQuestionRead):
+    reference_answer: str
+    rubric: str | None
+
+
+class AssignmentBaseRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     id: PydanticObjectId
     title: str
     description: str | None
     class_id: PydanticObjectId
-    questions: list[AssignmentQuestionCreate]
     due_at: datetime | None
     status: AssignmentStatus
     created_by: PydanticObjectId
     created_at: datetime
+    question_source: Literal["snapshot", "draft_preview", "legacy_reference"]
+
+
+class AssignmentRead(AssignmentBaseRead):
+    view: Literal["teacher"] = "teacher"
+    questions: list[TeacherAssignmentQuestionRead]
+
+
+class StudentAssignmentRead(AssignmentBaseRead):
+    view: Literal["student"] = "student"
+    questions: list[StudentAssignmentQuestionRead]
+
+
+AssignmentResponse = Annotated[
+    AssignmentRead | StudentAssignmentRead, Field(discriminator="view")
+]
 
 
 class SubmissionAnswerCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     question_id: PydanticObjectId
-    answer_text: Annotated[str, Field(min_length=1)]
+    answer_text: Annotated[str, Field(min_length=1, max_length=20_000)]
+
+    @field_validator("answer_text")
+    @classmethod
+    def validate_answer(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Answer cannot be blank")
+        return value
 
 
 class SubmissionCreate(BaseModel):
-    answers: list[SubmissionAnswerCreate]
+    model_config = ConfigDict(extra="forbid")
+    answers: list[SubmissionAnswerCreate] = Field(min_length=1)
 
 
 class SubmissionAnswerRead(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
     question_id: PydanticObjectId
     answer_text: str
     ai_score: float | None = None
@@ -176,6 +293,8 @@ class SubmissionAnswerRead(BaseModel):
 
 
 class SubmissionRead(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+    view: Literal["teacher"] = "teacher"
     id: PydanticObjectId
     assignment_id: PydanticObjectId
     student_id: PydanticObjectId
@@ -188,11 +307,66 @@ class SubmissionRead(BaseModel):
     reviewed_at: datetime | None
 
 
-class GradeOverride(BaseModel):
+class StudentSubmissionAnswerRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     question_id: PydanticObjectId
-    final_score: Annotated[float, Field(ge=0)]
+    answer_text: str
+    final_score: float | None = None
     final_comment: str | None = None
 
 
+class StudentSubmissionRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    view: Literal["student"] = "student"
+    id: PydanticObjectId
+    assignment_id: PydanticObjectId
+    student_id: PydanticObjectId
+    answers: list[StudentSubmissionAnswerRead]
+    status: SubmissionStatus
+    final_total_score: float | None
+    submitted_at: datetime
+    reviewed_by: PydanticObjectId | None
+    reviewed_at: datetime | None
+
+
+SubmissionResponse = Annotated[
+    SubmissionRead | StudentSubmissionRead, Field(discriminator="view")
+]
+
+
+class SubmissionProgress(BaseModel):
+    submitted_count: int
+    pending_count: int
+    confirmed_count: int
+
+
+class SubmissionPage(BaseModel):
+    items: list[SubmissionRead]
+    total: int
+    page: int
+    page_size: int
+    progress: SubmissionProgress
+
+
+class GradeOverride(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    question_id: PydanticObjectId
+    final_score: Annotated[float, Field(ge=0, allow_inf_nan=False, strict=True)]
+    final_comment: Annotated[str | None, Field(max_length=1000)] = None
+
+    @field_validator("final_score")
+    @classmethod
+    def validate_score_precision(cls, value: float) -> float:
+        if Decimal(str(value)).as_tuple().exponent < -2:
+            raise ValueError("Final score must have at most two decimal places")
+        return value
+
+    @field_validator("final_comment")
+    @classmethod
+    def normalize_final_comment(cls, value):
+        return (value.strip() or None) if value is not None else None
+
+
 class ConfirmGradeRequest(BaseModel):
-    grades: list[GradeOverride]
+    model_config = ConfigDict(extra="forbid")
+    grades: list[GradeOverride] = Field(min_length=1)
