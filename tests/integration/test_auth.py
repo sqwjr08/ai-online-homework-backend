@@ -160,4 +160,4 @@ async def test_question_bank_role_access(api_client, auth_headers, role, expecte
     response = await api_client.get("/api/v1/questions", headers=await auth_headers(role))
     assert response.status_code == expected_status
     if expected_status == 200:
-        assert response.json() == []
+        assert response.json() == {"items": [], "total": 0, "page": 1, "page_size": 20}

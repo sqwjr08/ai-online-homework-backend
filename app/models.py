@@ -4,6 +4,7 @@ from enum import StrEnum
 from beanie import Document, Indexed
 from beanie.odm.fields import PydanticObjectId
 from pydantic import BaseModel, Field
+from pymongo import IndexModel
 
 
 def utc_now() -> datetime:
@@ -19,6 +20,7 @@ class UserRole(StrEnum):
 class AssignmentStatus(StrEnum):
     draft = "draft"
     published = "published"
+    archived = "archived"
 
 
 class SubmissionStatus(StrEnum):
@@ -61,6 +63,7 @@ class Question(Document):
     image_urls: list[str] = Field(default_factory=list)
     created_by: PydanticObjectId
     is_active: bool = True
+    content_locked: bool = False
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -68,8 +71,17 @@ class Question(Document):
         name = "questions"
 
 
+class QuestionSnapshot(BaseModel):
+    prompt: str
+    reference_answer: str
+    max_score: float = Field(gt=0, allow_inf_nan=False)
+    rubric: str | None = None
+    image_urls: list[str] = Field(default_factory=list)
+
+
 class AssignmentQuestion(BaseModel):
     question_id: PydanticObjectId
+    snapshot: QuestionSnapshot | None = None
 
 
 class Assignment(Document):
@@ -77,8 +89,11 @@ class Assignment(Document):
     description: str | None = None
     class_id: PydanticObjectId
     questions: list[AssignmentQuestion]
+    snapshot_version: int | None = None
     due_at: datetime | None = None
     status: AssignmentStatus = AssignmentStatus.published
+    archived_from: AssignmentStatus | None = None
+    revision: int = Field(default=0, ge=0)
     created_by: PydanticObjectId
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -109,3 +124,7 @@ class Submission(Document):
 
     class Settings:
         name = "submissions"
+        indexes = [IndexModel(
+            [("assignment_id", 1), ("student_id", 1)],
+            unique=True, name="unique_assignment_student",
+        )]

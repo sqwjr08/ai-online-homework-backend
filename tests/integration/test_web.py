@@ -1,7 +1,8 @@
-import base64
+from io import BytesIO
 from urllib.parse import urlsplit
 
 import pytest
+from PIL import Image
 
 from app.models import UserRole
 
@@ -76,9 +77,10 @@ async def test_request_without_origin_remains_supported(api_client):
 
 
 async def test_multipart_image_upload_and_static_read(api_client, auth_headers, test_settings):
-    content = base64.b64decode(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aHoQAAAAASUVORK5CYII="
-    )
+    output = BytesIO()
+    with Image.new("RGB", (2, 2), "red") as source:
+        source.save(output, format="PNG")
+    content = output.getvalue()
     response = await api_client.post(
         "/api/v1/uploads/images",
         headers=await auth_headers(UserRole.teacher),
@@ -88,8 +90,10 @@ async def test_multipart_image_upload_and_static_read(api_client, auth_headers, 
     url = response.json()["url"]
     assert url.startswith(f"{test_settings.public_base_url}/uploads/images/")
     filename = urlsplit(url).path.rsplit("/", 1)[1]
-    assert (test_settings.upload_dir / "images" / filename).read_bytes() == content
+    stored = (test_settings.upload_dir / "images" / filename).read_bytes()
     image = await api_client.get(url)
     assert image.status_code == 200
     assert image.headers["content-type"] == "image/png"
-    assert image.content == content
+    assert image.content == stored
+    with Image.open(BytesIO(stored)) as decoded:
+        assert decoded.size == (2, 2) and decoded.getpixel((0, 0)) == (255, 0, 0, 255)

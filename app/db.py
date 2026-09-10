@@ -12,12 +12,32 @@ client: AsyncMongoClient | None = None
 async def init_database(settings: Settings) -> None:
     global client
     client = AsyncMongoClient(settings.mongodb_uri, serverSelectionTimeoutMS=5000)
+    await check_submission_index_readiness(client[settings.database_name])
     await init_beanie(
         database=client[settings.database_name],
         document_models=[User, ClassGroup, Question, Assignment, Submission],
         allow_index_dropping=False,
     )
     await ensure_dev_admin(settings)
+
+
+async def check_submission_index_readiness(database) -> None:
+    collection = database["submissions"]
+    invalid = await collection.find_one({"$expr": {"$or": [
+        {"$ne": [{"$type": "$assignment_id"}, "objectId"]},
+        {"$ne": [{"$type": "$student_id"}, "objectId"]},
+    ]}}, {"_id": 1})
+    if invalid is not None:
+        raise RuntimeError("Submission index blocked: invalid assignment/student IDs; repair data explicitly")
+    cursor = await collection.aggregate([
+        {"$group": {"_id": {"assignment": "$assignment_id", "student": "$student_id"},
+                     "count": {"$sum": 1}}},
+        {"$match": {"count": {"$gt": 1}}},
+        {"$limit": 1},
+    ])
+    async with cursor:
+        if await cursor.to_list(length=1):
+            raise RuntimeError("Submission index blocked: duplicate assignment/student pairs; repair data explicitly")
 
 
 async def close_database() -> None:

@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from app.models import Question
+from app.models import QuestionSnapshot
 
 
 @dataclass
@@ -10,12 +10,12 @@ class GradeResult:
 
 
 class GradingService:
-    async def grade_short_answer(self, question: Question, answer_text: str) -> GradeResult:
+    async def grade_short_answer(self, question: QuestionSnapshot, answer_text: str) -> GradeResult:
         raise NotImplementedError
 
 
 class PlaceholderGradingService(GradingService):
-    async def grade_short_answer(self, question: Question, answer_text: str) -> GradeResult:
+    async def grade_short_answer(self, question: QuestionSnapshot, answer_text: str) -> GradeResult:
         normalized_answer = answer_text.strip()
         if not normalized_answer:
             return GradeResult(score=0, comment="未作答。")

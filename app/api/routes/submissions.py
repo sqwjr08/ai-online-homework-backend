@@ -1,22 +1,27 @@
-from datetime import UTC, datetime
+from typing import Annotated
 
 from beanie.odm.fields import PydanticObjectId
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pymongo.errors import DuplicateKeyError
 
 from app.api.routes.assignments import ensure_assignment_access
 from app.core.deps import get_current_user, require_roles
 from app.models import (
     Assignment,
     ClassGroup,
-    Question,
     Submission,
     SubmissionAnswer,
     SubmissionStatus,
     User,
     UserRole,
 )
-from app.schemas import ConfirmGradeRequest, SubmissionCreate, SubmissionRead
+from app.schemas import (
+    ConfirmGradeRequest, SubmissionCreate, SubmissionRead, StudentSubmissionRead,
+    SubmissionResponse, SubmissionPage,
+)
 from app.services.grading import GradingService, get_grading_service
+from app.services.assignments import assignment_content, ensure_deadline_open
+from app.services.submissions import confirm_submission_grade, submission_page, submission_read
 
 router = APIRouter(tags=["submissions"])
 
@@ -35,31 +40,22 @@ async def ensure_submission_teacher_access(submission: Submission, teacher: User
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
 
-async def redact_unconfirmed_for_student(submission: Submission, user: User) -> Submission:
-    if user.role != UserRole.student or submission.status == SubmissionStatus.confirmed:
-        return submission
-    redacted = submission.model_copy(deep=True)
-    redacted.ai_total_score = None
-    redacted.final_total_score = None
-    for answer in redacted.answers:
-        answer.ai_score = None
-        answer.ai_comment = None
-        answer.final_score = None
-        answer.final_comment = None
-    return redacted
-
-
 @router.post(
     "/assignments/{assignment_id}/submissions",
-    response_model=SubmissionRead,
+    response_model=StudentSubmissionRead,
     status_code=status.HTTP_201_CREATED,
+    responses={400: {"description": "Answer mismatch or deadline has passed"},
+               401: {"description": "Not authenticated"},
+               403: {"description": "Student role or class membership required"},
+               404: {"description": "Assignment not found or not visible"},
+               409: {"description": "Duplicate submission, archived class or content requires repair"}},
 )
 async def submit_assignment(
     assignment_id: PydanticObjectId,
     payload: SubmissionCreate,
     current_user: User = Depends(require_roles(UserRole.student)),
     grading_service: GradingService = Depends(get_grading_service),
-) -> Submission:
+) -> StudentSubmissionRead:
     assignment = await Assignment.get(assignment_id)
     if not assignment:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assignment not found")
@@ -67,8 +63,7 @@ async def submit_assignment(
     class_group = await ClassGroup.get(assignment.class_id)
     if not class_group or not class_group.is_active:
         raise HTTPException(status_code=409, detail="Class is archived")
-    if assignment.due_at and assignment.due_at < datetime.now(UTC):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Assignment is closed")
+    ensure_deadline_open(assignment)
 
     existing = await Submission.find_one(
         Submission.assignment_id == assignment.id,
@@ -80,6 +75,8 @@ async def submit_assignment(
         )
 
     expected_ids = [item.question_id for item in assignment.questions]
+    if not expected_ids or len(expected_ids) != len(set(expected_ids)):
+        raise HTTPException(status_code=409, detail="Assignment questions require repair")
     provided_ids = [item.question_id for item in payload.answers]
     if set(expected_ids) != set(provided_ids) or len(provided_ids) != len(set(provided_ids)):
         raise HTTPException(
@@ -87,8 +84,8 @@ async def submit_assignment(
             detail="Answers must match assignment questions",
         )
 
-    questions = await Question.find({"_id": {"$in": expected_ids}, "is_active": True}).to_list()
-    question_by_id = {item.id: item for item in questions}
+    _, contents = await assignment_content(assignment)
+    question_by_id = dict(zip(expected_ids, contents, strict=True))
     answers: list[SubmissionAnswer] = []
     ai_total = 0.0
     for item in payload.answers:
@@ -108,21 +105,58 @@ async def submit_assignment(
             )
         )
 
+    # Grading may take time; recheck admission before persisting the answer.
+    latest = await Assignment.get(assignment.id)
+    if latest is None:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    await ensure_assignment_access(latest, current_user)
+    class_group = await ClassGroup.get(latest.class_id)
+    if not class_group or not class_group.is_active:
+        raise HTTPException(status_code=409, detail="Class is archived")
+    ensure_deadline_open(latest)
     submission = Submission(
         assignment_id=assignment.id,
         student_id=current_user.id,
         answers=answers,
         ai_total_score=round(ai_total, 2),
     )
-    await submission.insert()
-    return await redact_unconfirmed_for_student(submission, current_user)
+    try:
+        await submission.insert()
+    except DuplicateKeyError:
+        if await Submission.find_one({"assignment_id": assignment.id, "student_id": current_user.id}):
+            raise HTTPException(status_code=409, detail="Assignment already submitted") from None
+        raise
+    return submission_read(submission, current_user)
 
 
-@router.get("/submissions/{submission_id}", response_model=SubmissionRead)
+@router.get(
+    "/assignments/{assignment_id}/submissions/my", response_model=StudentSubmissionRead,
+    responses={401: {"description": "Not authenticated"},
+               403: {"description": "Students only"},
+               404: {"description": "No submission belonging to the current student"}},
+)
+async def get_my_submission(
+    assignment_id: PydanticObjectId,
+    current_user: User = Depends(require_roles(UserRole.student)),
+) -> StudentSubmissionRead:
+    # Ownership, not current class or assignment visibility, controls historical answer access.
+    submission = await Submission.find_one({
+        "assignment_id": assignment_id, "student_id": current_user.id,
+    })
+    if submission is None:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    return submission_read(submission, current_user)
+
+
+@router.get("/submissions/{submission_id}", response_model=SubmissionResponse, responses={
+    401: {"description": "Not authenticated"},
+    403: {"description": "Submission access denied"},
+    404: {"description": "Submission, assignment or class not found"},
+})
 async def get_submission(
     submission_id: PydanticObjectId,
     current_user: User = Depends(get_current_user),
-) -> Submission:
+) -> SubmissionRead | StudentSubmissionRead:
     submission = await Submission.get(submission_id)
     if not submission:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Submission not found")
@@ -130,10 +164,37 @@ async def get_submission(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     if current_user.role in {UserRole.admin, UserRole.teacher}:
         await ensure_submission_teacher_access(submission, current_user)
-    return await redact_unconfirmed_for_student(submission, current_user)
+    return submission_read(submission, current_user)
 
 
-@router.post("/submissions/{submission_id}/confirm-grade", response_model=SubmissionRead)
+@router.get(
+    "/assignments/{assignment_id}/submissions", response_model=SubmissionPage,
+    responses={401: {"description": "Not authenticated"},
+               403: {"description": "Class teacher or administrator required"},
+               404: {"description": "Assignment or class not found"}},
+)
+async def list_submissions(
+    assignment_id: PydanticObjectId,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.teacher)),
+    page: Annotated[int, Query(ge=1, le=1_000_000)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+    status: SubmissionStatus | None = None,
+) -> SubmissionPage:
+    assignment = await Assignment.get(assignment_id)
+    if assignment is None:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    await ensure_assignment_access(assignment, current_user)
+    return await submission_page(assignment, page, page_size, status)
+
+
+@router.post(
+    "/submissions/{submission_id}/confirm-grade", response_model=SubmissionRead,
+    responses={400: {"description": "Grades mismatch or score exceeds snapshot maximum"},
+               401: {"description": "Not authenticated"},
+               403: {"description": "Class teacher or administrator required"},
+               404: {"description": "Submission, assignment or class not found"},
+               409: {"description": "Grade locked, concurrent confirmation or data requires repair"}},
+)
 async def confirm_grade(
     submission_id: PydanticObjectId,
     payload: ConfirmGradeRequest,
@@ -144,32 +205,4 @@ async def confirm_grade(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Submission not found")
     assignment = await ensure_submission_teacher_access(submission, current_user)
 
-    assignment_question_ids = [item.question_id for item in assignment.questions]
-    questions = await Question.find(
-        {"_id": {"$in": assignment_question_ids}, "is_active": True}
-    ).to_list()
-    max_score_by_id = {item.id: item.max_score for item in questions}
-    override_by_id = {item.question_id: item for item in payload.grades}
-    if set(override_by_id) != {answer.question_id for answer in submission.answers}:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Grades must match submission answers"
-        )
-
-    final_total = 0.0
-    for answer in submission.answers:
-        override = override_by_id[answer.question_id]
-        max_score = max_score_by_id.get(answer.question_id)
-        if max_score is None or override.final_score > max_score:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail="Final score is out of range"
-            )
-        answer.final_score = round(override.final_score, 2)
-        answer.final_comment = override.final_comment or answer.ai_comment
-        final_total += answer.final_score
-
-    submission.status = SubmissionStatus.confirmed
-    submission.final_total_score = round(final_total, 2)
-    submission.reviewed_by = current_user.id
-    submission.reviewed_at = datetime.now(UTC)
-    await submission.save()
-    return submission
+    return await confirm_submission_grade(submission, assignment, payload, current_user)
