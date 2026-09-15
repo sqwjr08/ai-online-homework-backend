@@ -2,6 +2,8 @@
 
 统一前缀 `/api/v1`。启动后以 `/docs` 和 `/openapi.json` 的模型为准，下表表示接口存在，不表示端到端流程已验收。
 
+14a 至 14c 契约：提交成功表示答案已保存，不表示 AI 完成；教师响应提供 `ai_status`、`ai_attempts`、`ai_error_code`、`ai_retry_count`、`ai_next_attempt_at`，不暴露内部执行令牌。学生响应不变。独立 worker 生成草稿；人工确认不等待 AI。新增 `POST /submissions/{id}/retry-grading`，本班教师/管理员携带 `expected_retry_count` 对未确认失败记录重试，成功 202、状态或版本不匹配 409。见 [AI 执行机制](ai-execution.md)。
+
 | 方法与路径 | 使用者与用途 |
 | --- | --- |
 | POST /auth/register | 未登录学生注册，不允许注册教师或管理员 |

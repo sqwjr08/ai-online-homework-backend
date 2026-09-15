@@ -4,6 +4,8 @@
 
 **状态：开发中。** 本地已通过真实 HTTP 验证建班、出题、发布、答题、批改和查分流程，含跨角色/跨班反例，见 [后端验收](docs/backend-acceptance.md)。这不是生产就绪版本。名称中的 AI 表示规划方向：目前只有关键词匹配占位评分，尚未接入真实模型。
 
+当前本地开发已完成节点 14：先保存答案，独立 worker 后台生成占位草稿，支持有限重试、退避、租约恢复和过期结果隔离；教师可直接人工评分或对失败记录手动重试。真实 HTTP 和 worker 进程重启已通过 [串联验收](docs/ai-execution-acceptance.md)。另开终端运行 `uv run --frozen --no-sync python -m app.worker`；不启动 worker 时新提交保持 pending。详见 [AI 执行机制](docs/ai-execution.md)。
+
 ## 技术栈
 
 Python 3.12 / 3.13、FastAPI、Pydantic、MongoDB、Beanie 2、PyMongo Async、pwdlib / Argon2id、PyJWT、uv、pytest / HTTPX、Ruff。依赖版本由 [uv.lock](uv.lock) 锁定，当前不再使用 Motor。
@@ -22,19 +24,19 @@ Python 3.12 / 3.13、FastAPI、Pydantic、MongoDB、Beanie 2、PyMongo Async、p
 - FastAPI 自动接口文档、显式 CORS 来源、生产环境配置检查。
 - 隔离的 MongoDB 接口测试：每条测试独立数据库，清理前验证归属标记，不使用开发数据库。
 
-题库、作业、提交、批改与图片上传已通过本地后端流程验收；评分异步化、真实模型、前端及部署资源限制仍待完善。首次确认后的成绩暂不可更正。完整边界见 [开发状态与路线图](docs/status.md)。
+题库、作业、提交、批改、图片上传与后台评分执行机制已通过本地限定范围验收；真实模型、前端及部署资源限制仍待完善。首次确认后的成绩暂不可更正。完整边界见 [开发状态与路线图](docs/status.md)。
 
 ## 本地运行
 
 需要安装 Git、uv、Python 3.12 或 3.13，以及可用的 MongoDB。当前本地验证基线为 Python 3.13.3、MongoDB 8.0.6；不宣称所有版本/平台都已验证。以下命令在仓库根目录执行，MongoDB 仅绑定本机。
 
 ```powershell
-git clone --branch codex/node-07-question-bank https://github.com/sqwjr08/ai-online-homework-backend.git
+git clone --branch codex/node-14-ai-execution https://github.com/sqwjr08/ai-online-homework-backend.git
 cd ai-online-homework-backend
 uv sync --frozen --extra dev --python 3.13
 ```
 
-节点 01 至 13 的本次验收版本位于 `codex/node-07-question-bank` 分支；`main` 已包含此前 Python 基础版本，但本次发布不自动合并 main。已经位于当前开发目录时直接从 `uv sync` 开始。
+节点 14 的本次提交分支为 `codex/node-14-ai-execution`，包含节点 01 至 14 的代码；节点 01 至 13 已合并到 main。本次以开发分支交付，main 的合并状态以 GitHub PR 为准。已经位于当前开发目录时直接从 `uv sync` 开始。
 
 ```powershell
 if (-not (Test-Path .env)) { Copy-Item .env.example .env }

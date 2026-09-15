@@ -6,7 +6,6 @@ import pytest_asyncio
 from beanie import PydanticObjectId
 
 from app.models import Assignment, ClassGroup, Question, Submission, UserRole
-from app.services.grading import GradeResult, get_grading_service
 
 pytestmark = pytest.mark.integration
 
@@ -177,23 +176,26 @@ async def test_publish_does_not_overwrite_concurrent_change(api_client, work, mo
 
 
 @pytest.mark.parametrize("change", ["archive", "deadline"])
-async def test_admission_rechecked_after_grading(api_client, work, test_app, monkeypatch, change):
+async def test_admission_rechecked_after_content_loading(api_client, work, test_app, monkeypatch, change):
     import app.services.assignments as service
+    import app.api.routes.submissions as route
 
     now = datetime(2030, 1, 1, tzinfo=UTC)
     monkeypatch.setattr(service, "utc_now", lambda: now)
     await api_client.patch(work["path"], headers=work["teacher"], json={"due_at": (now + timedelta(seconds=1)).isoformat()})
     assert (await api_client.post(work["path"] + "/publish", headers=work["teacher"])).status_code == 200
 
-    class SlowGrader:
-        async def grade_short_answer(self, question, answer_text):
-            if change == "archive":
-                assert (await api_client.post(work["path"] + "/archive", headers=work["teacher"])).status_code == 200
-            else:
-                monkeypatch.setattr(service, "utc_now", lambda: now + timedelta(seconds=1))
-            return GradeResult(score=1, comment="Review")
+    original = route.assignment_content
 
-    test_app.dependency_overrides[get_grading_service] = lambda: SlowGrader()
+    async def slow_content(assignment):
+        contents = await original(assignment)
+        if change == "archive":
+            assert (await api_client.post(work["path"] + "/archive", headers=work["teacher"])).status_code == 200
+        else:
+            monkeypatch.setattr(service, "utc_now", lambda: now + timedelta(seconds=1))
+        return contents
+
+    monkeypatch.setattr(route, "assignment_content", slow_content)
     result = await api_client.post(work["path"] + "/submissions", headers=work["student"], json=work["answers"])
     assert result.status_code == (404 if change == "archive" else 400)
     assert await Submission.count() == 0

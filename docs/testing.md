@@ -1,5 +1,37 @@
 # 测试与验证
 
+## 14d 验证记录（2026-09-11）
+
+- 新增 2 项真实 TCP/HTTP 串联测试，运行本文件 14c 精简集合加 `tests/integration/test_ai_execution_acceptance.py`，共 `27 passed in 19.64s`，`-W error`；Ruff 通过，不是全量回归。
+- 测试实际等待短时退避和租约到期；逐题中途失败不保存半份草稿，自动重试耗尽后经 HTTP 人工重试、确认与查分；另一项真实终止 worker 子进程并以正常 CLI 重启接管。没有直接修改任务状态或时间来模拟成功。
+- 所有必要子进程、临时 HTTP 服务已结束；独立 27018 随机测试库无残留，核验实例路径和数据库清单后关闭。未访问开发数据，未修改业务代码、依赖或索引。
+- 完整步骤、复验命令和未验收边界见 [后台批改串联验收](ai-execution-acceptance.md)。真实 AI 和生产故障演练尚未完成，不将本次结果泛化为上线就绪。
+
+## 14c 验证记录（2026-09-11）
+
+- 最终 `25 passed in 8.68s`，`-W error`；Ruff 通过。只运行新增重试机制及直接关联测试，没有全量回归。
+- 命令：`python -m pytest -q -W error tests/integration/test_grading_retry.py tests/integration/test_grading_worker.py tests/integration/test_teacher_review.py tests/test_worker_config.py`。
+- 覆盖临时错误退避后成功、正常失败/崩溃共用三次预算、旧次数兼容、教师/管理员权限与并发重放保护、各状态禁止重试、人工确认竞争，以及既有 worker 进程与迟到结果保护。新增 7 项集成和 1 项请求校验单元测试；保留原测试，更新超时将自动排队的契约断言。
+- 使用独立 27018 MongoDB 和归属隔离测试库，子进程测试结束关闭，库清理后核对实例路径/数据库清单并关闭实例。未访问开发数据库、不升级依赖或修改索引。
+- 退避用数据库时间条件及测试设置到期时间验证，不实际等待长时退避；未接入真实 provider，真实限流/网络故障及费用效果不属于本轮验收，14d 继续串联验证。
+
+## 14b 验证记录（2026-09-11）
+
+- 最终精简回归 `62 passed in 11.84s`，`-W error`；包含 9 项 worker 集成测试、19 项关联接口测试和 34 项配置单元测试。Ruff 通过；不是全量回归。
+- 命令：`python -m pytest -q -W error tests/integration/test_grading_worker.py tests/integration/test_teacher_review.py tests/integration/test_submission_management.py tests/integration/test_backend_acceptance.py tests/test_worker_config.py tests/test_config.py tests/test_config_security.py`。
+- worker 覆盖原子竞争领取、占位评分成功、超时/异常/非法结果、租约过期接管、旧结果拒绝、人工确认先后两种竞争、取消及旧记录不排队，另实际启动 `python -m app.worker` 子进程验证数据库共享和执行入口。
+- 所有测试使用独立 27018 实例和带归属标记的随机库；子进程已结束，测试库无残留，路径及数据库清单检查后关闭独立实例。未访问开发数据库，不升级依赖。
+- 未执行真实 provider、真实断网/断电或多主机压测；恢复测试用持久记录和新 worker 对象模拟租约到期，独立进程测试验证真实启动，不等同于生产故障演练。14c 自动/手动重试尚未实现。
+
+## 14a 验证记录（2026-09-11）
+
+- 49 项数据库/真实 HTTP 关联测试通过（16.89s），15 项单元测试通过（0.10s），均使用 `-W error`。本轮合计 64 项，不是全量回归。
+- 新增 4 项：pending/processing/failed 下人工评分及取消状态，旧记录缺失 AI 状态的只读兼容。已有并发提交、截止重检、快照与 HTTP 验收测试按先保存契约调整，未删除旧测试。
+- 集成测试命令：`python -m pytest -q -W error tests/integration/test_submission_management.py tests/integration/test_assignment_lifecycle.py tests/integration/test_assignment_snapshots.py tests/integration/test_teacher_review.py tests/integration/test_backend_acceptance.py`。
+- 单元测试命令：`python -m pytest -q -W error tests/test_submission_validation.py tests/test_grade_validation.py tests/test_grading.py`。
+- 使用 `TEST_MONGODB_URI=mongodb://127.0.0.1:27018` 独立实例，随机数据库与归属标记清理；未访问开发数据。首次沙箱运行遇到缓存/临时目录权限限制，授权重跑通过。测试库无残留，独立实例已检查路径后关闭。
+- Ruff 通过；无依赖或索引修改。worker、真实超时/恢复及自动重试未实现，不将本轮人工降级测试当作后台机制验收。
+
 ## 安装与非数据库测试
 
 以下命令在仓库根目录执行，不更新锁文件：

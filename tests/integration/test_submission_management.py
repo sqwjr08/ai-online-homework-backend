@@ -7,7 +7,7 @@ from pymongo.errors import DuplicateKeyError
 
 from app.db import check_submission_index_readiness
 from app.models import Assignment, ClassGroup, Question, Submission, UserRole
-from app.services.grading import GradeResult, get_grading_service
+from app.services.grading import get_grading_service
 
 pytestmark = pytest.mark.integration
 
@@ -35,17 +35,13 @@ async def submission_work(api_client, accounts, auth_headers):
 
 async def test_concurrent_submissions_have_one_winner(api_client, submission_work, test_app):
     work = submission_work
-    both_grading = asyncio.Event()
     calls = 0
 
     class BarrierGrader:
         async def grade_short_answer(self, question, answer_text):
             nonlocal calls
             calls += 1
-            if calls == 2:
-                both_grading.set()
-            await asyncio.wait_for(both_grading.wait(), 5)
-            return GradeResult(score=7, comment="Draft feedback")
+            raise TimeoutError("AI unavailable")
 
     test_app.dependency_overrides[get_grading_service] = lambda: BarrierGrader()
     results = await asyncio.gather(*[
@@ -54,9 +50,10 @@ async def test_concurrent_submissions_have_one_winner(api_client, submission_wor
     ])
     assert sorted(r.status_code for r in results) == [201, 409]
     stored = await Submission.find_one({"assignment_id": work["id"]})
-    assert await Submission.count() == 1 and stored.ai_total_score == 7
+    assert await Submission.count() == 1 and stored.ai_total_score is None
+    assert stored.ai_status == "pending" and calls == 0
     repeated = await api_client.post(work["path"] + "/submissions", headers=work["student"], json=work["payload"])
-    assert repeated.status_code == 409 and calls == 2
+    assert repeated.status_code == 409 and calls == 0
     found = await api_client.get(work["path"] + "/submissions/my", headers=work["student"])
     assert found.status_code == 200 and found.json()["id"] == str(stored.id)
     assert "ai_total_score" not in found.json() and "ai_comment" not in found.json()["answers"][0]
@@ -86,6 +83,44 @@ async def test_answer_matching_rejected_before_grading(api_client, submission_wo
     await collection.update_one({"_id": work["id"]}, {"$push": {"questions": {"question_id": PydanticObjectId()}}})
     missing = await api_client.post(work["path"] + "/submissions", headers=work["student"], json=work["payload"])
     assert missing.status_code == 400
+
+
+@pytest.mark.parametrize("ai_status", ["pending", "processing", "failed"])
+async def test_manual_confirmation_without_ai(api_client, submission_work, ai_status):
+    work = submission_work
+    result = await api_client.post(work["path"] + "/submissions", headers=work["student"], json=work["payload"])
+    assert result.status_code == 201 and "ai_status" not in result.json()
+    submission_id = PydanticObjectId(result.json()["id"])
+    stored = await Submission.get(submission_id)
+    assert stored.ai_status == "pending"
+    assert stored.answers[0].answer_text == "Example" and stored.answers[0].ai_score is None
+    await stored.set({"ai_status": ai_status})
+    path = f"/api/v1/submissions/{submission_id}"
+    detail = await api_client.get(path, headers=work["teacher"])
+    assert detail.json()["ai_status"] == ai_status
+    payload = {"grades": [{"question_id": str(work["question"].id), "final_score": 8}]}
+    confirmed = await api_client.post(path + "/confirm-grade", headers=work["teacher"], json=payload)
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["ai_status"] == "cancelled"
+    assert confirmed.json()["final_total_score"] == 8 and confirmed.json()["ai_total_score"] is None
+    assert (await api_client.post(path + "/confirm-grade", headers=work["teacher"], json=payload)).status_code == 409
+    student = (await api_client.get(path, headers=work["student"])).json()
+    assert student["final_total_score"] == 8 and "ai_status" not in student
+
+
+async def test_legacy_ai_state_is_read_only_and_not_queued(api_client, submission_work):
+    work = submission_work
+    collection = Submission.get_pymongo_collection()
+    legacy = Submission(assignment_id=work["id"], student_id=PydanticObjectId(), answers=[], ai_total_score=7)
+    await legacy.insert()
+    await collection.update_one({"_id": legacy.id}, {"$unset": {"ai_status": ""}})
+    before = await collection.find_one({"_id": legacy.id})
+    detail = await api_client.get(f"/api/v1/submissions/{legacy.id}", headers=work["teacher"])
+    assert detail.status_code == 200
+    assert detail.json()["ai_status"] == "legacy_unknown" and detail.json()["ai_total_score"] == 7
+    page = await api_client.get(work["path"] + "/submissions", headers=work["teacher"])
+    assert page.json()["items"][0]["ai_status"] == "legacy_unknown"
+    assert await collection.find_one({"_id": legacy.id}) == before
 
 
 async def test_find_own_submission_after_archive_and_confirm(api_client, submission_work, auth_headers, accounts):

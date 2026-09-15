@@ -45,4 +45,4 @@ HTTP -> app/api/routes -> app/services + app/core/deps
 
 节点 10 通过联合唯一索引保证一次提交，并提供本人查询及答案校验；初始化索引前只读检查异常/重复记录，失败不自动修改旧数据，见 [提交说明](submissions.md)。节点 11 的 app/services/submissions.py 提供角色白名单、提交分页聚合及原子确认；以 pending 状态为写入条件，首次确认后锁定，不提供更正，见 [批改说明](teacher-review.md)。
 
-当前仍在保存提交前同步调用评分接口，竞争请求可能重复评分；真实 provider 接入前需要改为先保存答案、再处理评分失败与重试。学生响应已移除 AI 草稿字段，但这不代表完整业务、模型质量或生产运行已验收，见 [路线图](status.md)。
+14a 已移除提交请求中的评分调用，答案和独立 ai_status 同次保存；人工确认不依赖 AI 草稿。旧记录缺失 ai_status 时只读映射为 legacy_unknown，不自动重排队。14b 的 app/worker.py 独立入口调用 app/services/grading_worker.py，使用 Submission 的执行令牌和数据库时钟租约领取/恢复任务，原子保存完整草稿；14c 加入本轮预算、退避时间及手动重试版本。学生响应不包含 AI 状态或草稿。详见 [AI 执行机制](ai-execution.md) 和 [路线图](status.md)。

@@ -4,7 +4,9 @@ from decimal import Decimal
 from fastapi import HTTPException
 from pymongo import ReturnDocument
 
-from app.models import Assignment, AssignmentStatus, Submission, SubmissionStatus, User, UserRole, utc_now
+from app.models import (
+    AIGradingStatus, Assignment, AssignmentStatus, Submission, SubmissionStatus, User, UserRole, utc_now,
+)
 from app.schemas import (
     ConfirmGradeRequest, StudentSubmissionAnswerRead, StudentSubmissionRead,
     SubmissionPage, SubmissionRead,
@@ -72,26 +74,61 @@ async def confirm_submission_grade(submission: Submission, assignment: Assignmen
     _, contents = await assignment_content(assignment)
     max_scores = dict(zip(ids, [content.max_score for content in contents], strict=True))
     grades = {item.question_id: item for item in payload.grades}
-    answers = []
+    grade_branches = []
     total = Decimal(0)
     for answer in submission.answers:
         grade = grades[answer.question_id]
         if grade.final_score > max_scores[answer.question_id]:
             raise HTTPException(status_code=400, detail="Final score is out of range")
         total += Decimal(str(grade.final_score))
-        answers.append(answer.model_copy(update={
-            "final_score": grade.final_score, "final_comment": grade.final_comment,
-        }).model_dump())
+        grade_branches.append({
+            "case": {"$eq": ["$$answer.question_id", answer.question_id]},
+            "then": {"$literal": {
+                "final_score": grade.final_score, "final_comment": grade.final_comment,
+            }},
+        })
     final_total = float(total)
     if not math.isfinite(final_total):
         raise HTTPException(status_code=400, detail="Final total score is out of range")
     # Only the pending -> confirmed transition may write grades, including under concurrent review.
     stored = await Submission.get_pymongo_collection().find_one_and_update(
         {"_id": submission.id, "status": SubmissionStatus.pending_teacher_review},
-        {"$set": {"answers": answers, "final_total_score": final_total,
-                  "status": SubmissionStatus.confirmed, "reviewed_by": actor.id, "reviewed_at": utc_now()}},
+        [{"$set": {
+            "answers": {"$map": {"input": "$answers", "as": "answer", "in": {
+                "$mergeObjects": ["$$answer", {"$switch": {
+                    "branches": grade_branches, "default": {},
+                }}],
+            }}},
+            "ai_status": {"$cond": [
+                {"$in": ["$ai_status", ["pending", "processing", "failed"]]},
+                AIGradingStatus.cancelled,
+                {"$ifNull": ["$ai_status", AIGradingStatus.legacy_unknown]},
+            ]},
+            "ai_token": None, "ai_lease_until": None, "ai_next_attempt_at": None,
+            "final_total_score": final_total, "status": SubmissionStatus.confirmed,
+            "reviewed_by": actor.id, "reviewed_at": utc_now(),
+        }}],
         return_document=ReturnDocument.AFTER,
     )
     if stored is None:
         raise HTTPException(status_code=409, detail="Grade already confirmed or submission changed")
+    return Submission.model_validate(stored)
+
+
+async def retry_submission_grading(submission: Submission, expected_retry_count: int,
+                                   delay_seconds: int) -> Submission:
+    stored = await Submission.get_pymongo_collection().find_one_and_update(
+        {"_id": submission.id, "status": SubmissionStatus.pending_teacher_review,
+         "ai_status": AIGradingStatus.failed,
+         "$expr": {"$eq": [{"$ifNull": ["$ai_retry_count", 0]}, expected_retry_count]}},
+        [{"$set": {
+            "ai_status": AIGradingStatus.pending, "ai_cycle_attempts": 0,
+            "ai_retry_count": {"$add": [{"$ifNull": ["$ai_retry_count", 0]}, 1]},
+            "ai_token": None, "ai_lease_until": None,
+            "ai_next_attempt_at": {"$add": ["$$NOW", delay_seconds * 1000]},
+        }}],
+        return_document=ReturnDocument.AFTER,
+    )
+    if stored is None:
+        raise HTTPException(status_code=409, detail="Retry requires an unconfirmed failed submission and current retry count")
     return Submission.model_validate(stored)
