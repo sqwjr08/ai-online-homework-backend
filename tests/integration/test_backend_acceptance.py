@@ -144,7 +144,8 @@ async def test_live_complete_homework_workflow(live_client, account_password, ac
     await request(client, "GET", path + "/submissions", 403, other_teacher)
     page = await request(client, "GET", path + "/submissions?status=pending_teacher_review", headers=teacher)
     assert page["progress"] == {"submitted_count": 1, "pending_count": 1, "confirmed_count": 0}
-    assert page["items"][0]["ai_total_score"] is not None
+    assert page["items"][0]["ai_total_score"] is None
+    assert page["items"][0]["ai_status"] == "pending"
     grades = {"grades": [{"question_id": q["id"], "final_score": score, "final_comment": "Reviewed example"}
                           for q, score in zip(questions, [8.5, 4], strict=True)]}
     await request(client, "POST", submission_path + "/confirm-grade", 403, a, json=grades)

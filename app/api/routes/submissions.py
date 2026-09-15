@@ -6,7 +6,9 @@ from pymongo.errors import DuplicateKeyError
 
 from app.api.routes.assignments import ensure_assignment_access
 from app.core.deps import get_current_user, require_roles
+from app.core.config import Settings, get_settings
 from app.models import (
+    AIGradingStatus,
     Assignment,
     ClassGroup,
     Submission,
@@ -17,11 +19,12 @@ from app.models import (
 )
 from app.schemas import (
     ConfirmGradeRequest, SubmissionCreate, SubmissionRead, StudentSubmissionRead,
-    SubmissionResponse, SubmissionPage,
+    SubmissionResponse, SubmissionPage, RetryGradingRequest,
 )
-from app.services.grading import GradingService, get_grading_service
 from app.services.assignments import assignment_content, ensure_deadline_open
-from app.services.submissions import confirm_submission_grade, submission_page, submission_read
+from app.services.submissions import (
+    confirm_submission_grade, submission_page, submission_read, retry_submission_grading,
+)
 
 router = APIRouter(tags=["submissions"])
 
@@ -54,7 +57,6 @@ async def submit_assignment(
     assignment_id: PydanticObjectId,
     payload: SubmissionCreate,
     current_user: User = Depends(require_roles(UserRole.student)),
-    grading_service: GradingService = Depends(get_grading_service),
 ) -> StudentSubmissionRead:
     assignment = await Assignment.get(assignment_id)
     if not assignment:
@@ -84,28 +86,11 @@ async def submit_assignment(
             detail="Answers must match assignment questions",
         )
 
-    _, contents = await assignment_content(assignment)
-    question_by_id = dict(zip(expected_ids, contents, strict=True))
-    answers: list[SubmissionAnswer] = []
-    ai_total = 0.0
-    for item in payload.answers:
-        question = question_by_id.get(item.question_id)
-        if not question:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail="Question not found"
-            )
-        grade = await grading_service.grade_short_answer(question, item.answer_text)
-        ai_total += grade.score
-        answers.append(
-            SubmissionAnswer(
-                question_id=item.question_id,
-                answer_text=item.answer_text,
-                ai_score=grade.score,
-                ai_comment=grade.comment,
-            )
-        )
+    await assignment_content(assignment)
+    answers = [SubmissionAnswer(question_id=item.question_id, answer_text=item.answer_text)
+               for item in payload.answers]
 
-    # Grading may take time; recheck admission before persisting the answer.
+    # Content loading can yield; recheck admission immediately before saving.
     latest = await Assignment.get(assignment.id)
     if latest is None:
         raise HTTPException(status_code=404, detail="Assignment not found")
@@ -118,7 +103,7 @@ async def submit_assignment(
         assignment_id=assignment.id,
         student_id=current_user.id,
         answers=answers,
-        ai_total_score=round(ai_total, 2),
+        ai_status=AIGradingStatus.pending,
     )
     try:
         await submission.insert()
@@ -206,3 +191,26 @@ async def confirm_grade(
     assignment = await ensure_submission_teacher_access(submission, current_user)
 
     return await confirm_submission_grade(submission, assignment, payload, current_user)
+
+
+@router.post(
+    "/submissions/{submission_id}/retry-grading", response_model=SubmissionRead,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={401: {"description": "Not authenticated"},
+               403: {"description": "Class teacher or administrator required"},
+               404: {"description": "Submission, assignment or class not found"},
+               409: {"description": "Not failed, confirmed, or stale retry count"}},
+)
+async def retry_grading(
+    submission_id: PydanticObjectId,
+    payload: RetryGradingRequest,
+    current_user: User = Depends(require_roles(UserRole.admin, UserRole.teacher)),
+    settings: Settings = Depends(get_settings),
+) -> Submission:
+    submission = await Submission.get(submission_id)
+    if submission is None:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    await ensure_submission_teacher_access(submission, current_user)
+    return await retry_submission_grading(
+        submission, payload.expected_retry_count, settings.ai_retry_base_seconds,
+    )

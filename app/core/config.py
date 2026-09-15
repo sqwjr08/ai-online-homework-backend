@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     upload_dir: Path = Path("uploads")
     public_base_url: str = "http://localhost:8000"
     ai_provider: str = "placeholder"
+    ai_job_timeout_seconds: float = Field(default=60, gt=0, le=3600)
+    ai_lease_seconds: int = Field(default=90, ge=1, le=7200)
+    ai_poll_seconds: float = Field(default=2, gt=0, le=60)
+    ai_max_attempts: int = Field(default=3, ge=1, le=10)
+    ai_retry_base_seconds: int = Field(default=5, ge=1, le=300)
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -54,6 +59,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_environment_security(self) -> "Settings":
+        if self.ai_lease_seconds <= self.ai_job_timeout_seconds:
+            raise ValueError("AI lease must exceed the whole-job timeout")
         if self.enable_dev_default_admin and self.environment != "development":
             raise ValueError("The default administrator is allowed only in development")
         if not self.jwt_secret.strip():

@@ -9,6 +9,10 @@ class GradeResult:
     comment: str
 
 
+class TransientGradingError(Exception):
+    """Adapters may use this for retryable transport, rate-limit or service failures."""
+
+
 class GradingService:
     async def grade_short_answer(self, question: QuestionSnapshot, answer_text: str) -> GradeResult:
         raise NotImplementedError

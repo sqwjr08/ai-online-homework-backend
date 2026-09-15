@@ -48,7 +48,7 @@ uv run --frozen --no-sync pytest -q -W error tests/integration/test_backend_acce
 | 草稿 | POST /assignments，status=draft；PATCH 修改标题 | 学生列表无草稿，详情/提交草稿 404 |
 | 发布 | POST /assignments/{id}/publish | snapshot 来源，教师保留答案/规则，学生无这些字段 |
 | 作答 | 学生 A POST /assignments/{id}/submissions | 201、pending_teacher_review；分数隐藏，无 AI 字段 |
-| 待批改 | 教师 GET /assignments/{id}/submissions?status=pending_teacher_review | 已提交 1、待确认 1、已确认 0；教师能读草稿评分 |
+| 待批改 | 教师 GET /assignments/{id}/submissions?status=pending_teacher_review | 已提交 1、待确认 1、已确认 0；14a 起 ai_status=pending、草稿为空，教师直接人工评分 |
 | 确认 | 教师 POST /submissions/{id}/confirm-grade，每题 8.5、4 分 | confirmed，总分 12.5，首次确认后锁定 |
 | 查分 | 学生 GET /submissions/{id} 和 /assignments/{id}/submissions/my | 两个入口均 12.5 分、教师评语，无 AI 字段 |
 | 归档 | 教师归档作业和班级，再读取本人提交与图片 | 作业详情 404，历史成绩及公开图片仍可读取 |
@@ -103,9 +103,9 @@ uv run --frozen --no-sync pytest -q -W error tests/integration/test_backend_acce
 
 ## 尚未验收的部分
 
-- 真实 AI 尚未接入；评分先于保存、失败/超时重试以及跨集合归档竞态仍需后续节点处理。
+- 真实 AI 尚未接入；节点 14 已完成后台执行、有限重试及 [串联验收](ai-execution-acceptance.md)，但不是实际模型故障或生产可靠性验收；跨集合归档竞态限制不变。
 - 图片静态 URL 是公开资源，归档不撤销访问；没有网关限流、请求体入口限额和生产配额的验收。
 - 没有前端页面、浏览器 Swagger CDN 完整渲染、生产 TLS、压测、备份恢复或多平台验收。
 - 无成绩更正、未提交名单、课程体系或旧数据库迁移；这些不是本轮自动扩展的功能。
 
-下一节点 14：答案保存与 AI 评分解耦、失败重试。在继续前保留当前接口契约与已确认成绩锁定规则。
+2026-09-11 的 14a 已重跑本文件两项真实 HTTP 测试，包含在当轮 49 项集成测试中；14b 又在 62 项精简回归中重跑。以上 72 项为节点 13 历史记录，不是本轮结果。14d 另以 27 项精简测试验收后台执行串联，本文件旧测试未在 14d 重跑；下一节点 15 讨论真实 provider。

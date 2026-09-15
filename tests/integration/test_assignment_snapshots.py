@@ -120,8 +120,14 @@ async def test_snapshot_survives_source_changes_and_grading_uses_frozen_data(
     )
     assert submitted.status_code == 201, submitted.text
     assert "SECRET_" not in submitted.text and "ai_total_score" not in submitted.json()
-    assert {q.reference_answer for q in seen} == {"SECRET_ANSWER_0", "SECRET_ANSWER_1"}
-    assert {q.rubric for q in seen} == {"SECRET_RUBRIC_0", "SECRET_RUBRIC_1"}
+    assert seen == []  # Submission saving no longer invokes the provider.
+    stored_assignment = await Assignment.get(PydanticObjectId(assignment_id))
+    assert {q.snapshot.reference_answer for q in stored_assignment.questions} == {
+        "SECRET_ANSWER_0", "SECRET_ANSWER_1",
+    }
+    assert {q.snapshot.rubric for q in stored_assignment.questions} == {
+        "SECRET_RUBRIC_0", "SECRET_RUBRIC_1",
+    }
     grades = [{"question_id": str(q.id), "final_score": q.max_score, "final_comment": "Reviewed"}
               for q in assignment_setup[1]]
     submission_id = submitted.json()["id"]

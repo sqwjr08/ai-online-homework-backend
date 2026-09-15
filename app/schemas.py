@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 from beanie.odm.fields import PydanticObjectId
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.models import AssignmentStatus, SubmissionStatus, UserRole
+from app.models import AIGradingStatus, AssignmentStatus, SubmissionStatus, UserRole
 
 
 Username = Annotated[str, Field(min_length=3, max_length=50)]
@@ -300,11 +300,21 @@ class SubmissionRead(BaseModel):
     student_id: PydanticObjectId
     answers: list[SubmissionAnswerRead]
     status: SubmissionStatus
+    ai_status: AIGradingStatus
+    ai_attempts: int = 0
+    ai_retry_count: int = 0
+    ai_next_attempt_at: datetime | None = None
+    ai_error_code: str | None = None
     ai_total_score: float | None
     final_total_score: float | None
     submitted_at: datetime
     reviewed_by: PydanticObjectId | None
     reviewed_at: datetime | None
+
+
+class RetryGradingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_retry_count: int = Field(ge=0, le=2_147_483_647, strict=True)
 
 
 class StudentSubmissionAnswerRead(BaseModel):
