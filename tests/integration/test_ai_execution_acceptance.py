@@ -138,7 +138,8 @@ async def test_live_worker_process_restart_recovers_saved_submission(ai_work):
     script = """
 import asyncio
 import app.worker as entry
-class PausedProvider:
+from app.services.grading import GradingService
+class PausedProvider(GradingService):
     async def grade_short_answer(self, *args):
         await asyncio.sleep(60)
 entry.get_grading_service = lambda: PausedProvider()

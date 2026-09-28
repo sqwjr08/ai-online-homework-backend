@@ -9,7 +9,8 @@ from pymongo.errors import PyMongoError
 from app.core.config import Settings
 from app.models import Assignment, Submission
 from app.services.assignments import assignment_content
-from app.services.grading import GradingService, TransientGradingError
+from app.services.grading import GradingService, PermanentGradingError, TransientGradingError
+from app.services.grading_trace import grading_context
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +88,8 @@ class GradingWorker:
         total = 0.0
         for index, answer in enumerate(submission.answers):
             question = by_id[answer.question_id]
-            grade = await self.grader.grade_short_answer(question, answer.answer_text)
+            with grading_context(submission.id, answer.question_id, job.get("ai_attempts", 1)):
+                grade = await self.grader.grade_short_answer(question, answer.answer_text)
             if (isinstance(grade.score, bool) or not isinstance(grade.score, (int, float))
                     or not math.isfinite(grade.score) or not 0 <= grade.score <= question.max_score
                     or not isinstance(grade.comment, str) or not grade.comment.strip()
@@ -113,6 +115,8 @@ class GradingWorker:
         except TransientGradingError:
             retryable = True
             changes = {"ai_status": "failed", "ai_error_code": "provider_unavailable"}
+        except PermanentGradingError as exc:
+            changes = {"ai_status": "failed", "ai_error_code": exc.code}
         except Exception:
             # Never persist/log provider exception text, which may contain answers or credentials.
             changes = {"ai_status": "failed", "ai_error_code": "grading_failed"}

@@ -1,5 +1,51 @@
 # 测试与验证
 
+## 节点 15 发布前复验（2026-09-28）
+
+复跑下述 15e 的五个测试文件并加入默认跳过的真实百炼验收文件，结果 **16 passed, 1 skipped in 0.68s**，带 `-W error`；`ruff check app tests --no-cache` 和待提交差异检查通过。未发送真实 API 请求，未运行数据库或全量回归。已检查待提交文件中的本地密钥、常见凭据格式及本机路径，未发现命中；此检查不等于完整历史安全审计。
+
+## 15e 最小调用追踪（2026-09-28）
+
+运行 `tests/test_grading_trace.py`、`tests/test_bailian_adapter.py`、`tests/test_bailian_contract.py`、`tests/test_worker_config.py`、`tests/test_grading.py`，**16 passed in 0.62s**，带 `-W error`。新增 3 项集中测试；相关文件 Ruff 通过。全部使用模拟 HTTP 和临时日志目录，不发送真实请求、不访问数据库，不重跑全量测试或付费验收。
+
+覆盖成功元数据及任务上下文复位、敏感内容不记录、认证失败/超时/取消/非法评分、未知用量为 null、日志大小轮转、写入失败不向上抛异常，以及既有适配器和 worker 生命周期回归。审批等待超时后改用工作区内独立临时目录及禁用 pytest 缓存运行成功，没有变更权限或依赖。生产日志落盘与轮转采用单 worker 文件方案，限制见 [调用日志](ai-call-tracing.md)。
+
+## 15d 真实 AI 作业全流程（2026-09-28）
+
+仅执行 `tests/integration/test_bailian_live_acceptance.py`，**1 passed in 3.60s**，带 `-W error`；该文件 Ruff 检查通过。本轮最多 1 次真实请求，实际 1 次、0 重试，未执行全量回归。
+
+通过真实本机 TCP/HTTP 完成：管理员创建教师、学生注册、建班入班、创建一道虚构题、草稿发布、学生提交、确认答案已入库且 AI 尚未执行、启动生产 GradingWorker 执行循环、百炼 qwen3.8-flash 生成并保存 10/10 分及非空中文评语、教师确认、学生查分；同时检查确认前成绩隐藏、学生不暴露 AI 字段、重复确认 409。唯一绕过 HTTP 的写入是管理员初始化。
+
+worker 在测试进程中以异步任务运行，调用真实工厂和适配器，未模拟百炼响应；本轮不再次验证独立 worker 进程启动/重启（历史验证见 14d）。每轮最大尝试数设为 1，另有调用计数保护；仅包含一道题，没有重试请求。开发 .env 不修改，默认仍 placeholder。
+
+独立 MongoDB 绑定本机 27018，使用 `.verification/live-ai-15d`，每次测试为随机归属库。结束后核对实例路径及仅剩 admin/config/local，关闭该实例；HTTP 服务及 worker 任务由 finally 清理。不访问开发库，不补调用追踪，不新增业务功能。费用未核对，授权次数已用完。
+
+该测试默认跳过，普通测试不会付费。未授权模式复验为 `1 skipped in 0.13s`（首次收尾写 pytest 缓存遇到本机权限限制，使用 `-p no:cacheprovider` 后正常退出，未追加 API 请求）。重跑必须重新取得真实请求授权，并显式设置 `ALLOW_BAILIAN_LIVE_ACCEPTANCE=one-request`、`TEST_MONGODB_URI` 指向独立测试实例；本地 .env 提供北京百炼 Key 和 qwen3.8-flash。不要在 CI 设置付费开关。此结果证明一次正常全流程，不代表所有评分质量、故障场景或生产部署验收。
+
+## 15c 真实调用记录（2026-09-28）
+
+用户授权最多 3 次真实请求、不自动重试、不设金额上限。实际直接调用 BailianGradingService 共 3 次，均成功；不启动 worker、不连接 MongoDB、不读取既有提交。配置保持 AI_PROVIDER=placeholder，未修改本地密钥或输出其内容。
+
+模型 qwen3.8-flash，北京官方接口。虚构题目为“简述数据库索引的作用及代价”，满分 10 分，评分项为加快查询 4 分、额外存储 3 分、写入维护代价 3 分：
+
+| 答案 | 实得分 | 单次耗时 | 评语核对 |
+| --- | --- | --- | --- |
+| 完整覆盖三个评分点 | 10 | 1.89 秒 | 正确指出三个得分点 |
+| 只说明加快查询 | 4 | 1.76 秒 | 指出存储和写入代价遗漏 |
+| 错称自动备份、不占空间、不影响写入 | 0 | 1.98 秒 | 指出概念错误及缺少核心作用 |
+
+全部通过现有 JSON、分数范围和评语校验，得分排序与人工预期一致。请求额度已用完，不再追加调用。费用以百炼账单为准，本轮未核对金额或 token 用量。未新增测试代码、未重跑旧单元/数据库/全量测试；未验证真实模型与 worker/接口的整条流程、复杂题目、稳定性、提示词注入或生产负载。本次仅为三条小样本验证。
+
+## 15b 验证记录（2026-09-28）
+
+`python -m pytest -q -W error tests/test_bailian_adapter.py tests/test_bailian_contract.py tests/test_worker_config.py tests/test_grading.py`：13 passed in 0.58s，Ruff 通过。新增 6 项集中单元测试，全部 HTTP 使用 MockTransport，不读取真实 Key、不请求百炼或数据库。覆盖单次请求参数、错误分类/无隐藏重试/不跟随重定向、解析限制、网络超时/取消、工厂与 worker 关闭资源，以及错误接入现有重试策略。
+
+HTTPX 从开发依赖移至正式运行依赖，`uv lock --offline` 及 `uv sync --frozen --offline --extra dev` 完成；锁文件差异仅为此依赖分类变更，第三方版本不变。历史进程恢复测试中的测试 provider 补上统一生命周期继承，但本轮未重跑数据库或全套验收；真实模型响应、Key 权限、费用与效果留到 15c。
+
+## 15a 验证记录（2026-09-28）
+
+`python -m pytest -q -W error tests/test_bailian_contract.py tests/test_worker_config.py tests/test_grading.py`：7 passed in 0.13s，Ruff 通过。新增 3 项集中单元测试，覆盖北京配置/密钥显示、提示词数据隔离/不发送图片、评分 JSON 与边界；加现有 worker 配置和占位评分的必要回归。未运行数据库测试或全套测试，未调用真实 API；不把提示词规则视为模型效果已经验收。
+
 ## 14d 验证记录（2026-09-11）
 
 - 新增 2 项真实 TCP/HTTP 串联测试，运行本文件 14c 精简集合加 `tests/integration/test_ai_execution_acceptance.py`，共 `27 passed in 19.64s`，`-W error`；Ruff 通过，不是全量回归。

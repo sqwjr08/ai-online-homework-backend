@@ -1,8 +1,10 @@
 from functools import lru_cache
 from pathlib import Path
+import re
 from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import AnyHttpUrl, Field, TypeAdapter, field_validator, model_validator
+from pydantic import AnyHttpUrl, Field, SecretStr, TypeAdapter, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,6 +30,11 @@ class Settings(BaseSettings):
     ai_poll_seconds: float = Field(default=2, gt=0, le=60)
     ai_max_attempts: int = Field(default=3, ge=1, le=10)
     ai_retry_base_seconds: int = Field(default=5, ge=1, le=300)
+    bailian_api_key: SecretStr | None = Field(default=None, repr=False)
+    bailian_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    bailian_model: str = Field(default="qwen3.8-flash", min_length=1, max_length=128)
+    bailian_request_timeout_seconds: float = Field(default=30, gt=0, le=300)
+    bailian_max_output_tokens: int = Field(default=512, ge=64, le=4096)
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -35,6 +42,34 @@ class Settings(BaseSettings):
         extra="ignore",
         hide_input_in_errors=True,
     )
+
+    @field_validator("bailian_api_key", mode="before")
+    @classmethod
+    def normalize_bailian_key(cls, value):
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+    @field_validator("bailian_model")
+    @classmethod
+    def validate_bailian_model(cls, value: str) -> str:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", value):
+            raise ValueError("Invalid Bailian model ID")
+        return value
+
+    @field_validator("bailian_base_url")
+    @classmethod
+    def validate_bailian_url(cls, value: str) -> str:
+        url = urlsplit(value)
+        host = url.hostname or ""
+        allowed = host == "dashscope.aliyuncs.com" or re.fullmatch(
+            r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.cn-beijing\.maas\.aliyuncs\.com", host,
+        )
+        if (url.scheme != "https" or not allowed or url.username is not None
+                or url.password is not None or url.port not in (None, 443)
+                or url.path.rstrip("/") != "/compatible-mode/v1" or url.query or url.fragment):
+            raise ValueError("Bailian requires an official Beijing HTTPS base URL")
+        return value.rstrip("/")
 
     @field_validator("cors_origins")
     @classmethod
@@ -59,6 +94,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_environment_security(self) -> "Settings":
+        if self.ai_provider == "bailian":
+            if self.bailian_api_key is None or not self.bailian_api_key.get_secret_value().strip():
+                raise ValueError("BAILIAN_API_KEY is required for the Bailian provider")
+            if self.bailian_request_timeout_seconds >= self.ai_job_timeout_seconds:
+                raise ValueError("Bailian request timeout must be shorter than the whole-job timeout")
         if self.ai_lease_seconds <= self.ai_job_timeout_seconds:
             raise ValueError("AI lease must exceed the whole-job timeout")
         if self.enable_dev_default_admin and self.environment != "development":

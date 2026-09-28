@@ -27,7 +27,7 @@
 uv run --frozen --no-sync python -m app.worker
 ```
 
-Web 仍通过 uvicorn 独立运行，不会自动启动 worker。未启动 worker 时答案照常保存，保持 pending。当前 worker 仅支持 placeholder，其他 AI_PROVIDER 启动时明确报错，不会假装接入真实 AI。
+Web 仍通过 uvicorn 独立运行，不会自动启动 worker。未启动 worker 时答案照常保存，保持 pending。15b 起支持 placeholder/bailian，未知 AI_PROVIDER 明确报错。默认保持 placeholder，百炼尚未真实联调；启用前注意数据外发和费用，见 [百炼接入](bailian-grading.md)。
 
 - Submission 本身是持久队列，无额外队列服务或跨集合写入；新增非唯一 ai_work_queue 索引，原提交唯一索引不变。
 - 每个 worker 同时执行一份提交，多个 worker 原子竞争 pending 或租约已到期的 processing；领取时更新随机 ai_token、ai_lease_until 和 ai_attempts。租约使用 MongoDB 的 $$NOW，避免依赖不同进程的本机时间。

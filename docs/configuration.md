@@ -26,9 +26,11 @@
 
 ## 不是生产部署指南
 
+15a/15b 提供 `BAILIAN_API_KEY`、`BAILIAN_BASE_URL`、`BAILIAN_MODEL`、`BAILIAN_REQUEST_TIMEOUT_SECONDS`、`BAILIAN_MAX_OUTPUT_TOKENS` 及异步适配器。设置 AI_PROVIDER=bailian 后启动 worker 将发送真实请求并可能计费；首次联调应使用隔离数据库，避免自动处理开发库已有任务。北京域名约束及密钥说明见 [百炼接入](bailian-grading.md)。
+
 14c 新增 `AI_MAX_ATTEMPTS=3`（每轮含首次及崩溃接管，范围 1 至 10）和 `AI_RETRY_BASE_SECONDS=5`（指数退避基数，范围 1 至 300 秒）。Web 与所有 worker 必须使用相同配置。有限自动重试不等于外部调用恰好一次，也不替代费用监控。
 
-14b 新增 `AI_JOB_TIMEOUT_SECONDS=60`（整份提交超时）、`AI_LEASE_SECONDS=90`（必须大于超时）和 `AI_POLL_SECONDS=2`（空闲/数据库故障轮询间隔）。Web 和 worker 共用配置；worker 独立运行 `python -m app.worker`，当前仅接受 placeholder provider。更多边界见 [AI 执行机制](ai-execution.md)。
+14b 新增 `AI_JOB_TIMEOUT_SECONDS=60`（整份提交超时）、`AI_LEASE_SECONDS=90`（必须大于超时）和 `AI_POLL_SECONDS=2`（空闲/数据库故障轮询间隔）。Web 和 worker 共用配置；worker 独立运行 `python -m app.worker`，15b 起支持 placeholder/bailian。更多边界见 [AI 执行机制](ai-execution.md)。
 
 配置校验不能代替上线加固。图片真实内容和应用读取大小检查已完成；当前仍缺登录限流、完善密码策略、安全的生产管理员初始化、网关请求体/并发限制、对象存储、HTTPS 部署及备份恢复验证。现有新密码长度下限较低，不能称为完整强密码策略。不要把开发管理员、公开占位密钥或无认证的 MongoDB 暴露到公网。
 

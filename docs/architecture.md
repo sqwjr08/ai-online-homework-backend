@@ -18,7 +18,7 @@ HTTP -> app/api/routes -> app/services + app/core/deps
 - `app/core/`：环境配置、密码/JWT、当前用户与角色依赖。
 - `app/models.py`：持久化模型；`app/schemas.py`：请求和响应契约。
 - `app/api/routes/`：业务入口。账号和班级已提取服务；其他部分仍含路由内业务逻辑，不宣称完全服务化。
-- `app/services/grading.py`：可替换的评分接口，目前工厂固定返回占位实现。
+- `app/services/grading.py`：可替换的评分接口，工厂按 AI_PROVIDER 选择 placeholder 或 bailian；百炼异步实现位于 services/bailian.py，由 worker 负责关闭客户端。
 - `app/services/images.py`：JPEG/PNG 分块读取、Pillow 解码/像素限制、重新编码与排他写入；静态 URL 仍公开，见 [图片说明](images.md)。
 
 ## 数据关系
@@ -39,7 +39,7 @@ HTTP -> app/api/routes -> app/services + app/core/deps
 
 ## 评分边界
 
-设计目标是学生提交后等待教师复核，再展示最终分数和简短评语。当前评分器按参考答案分隔出的要点做字符串匹配，不理解语义，也不使用模型或评分标准推理。`AI_PROVIDER` 只是预留配置，改动它不会接通模型服务。
+学生提交后等待教师复核，再展示最终分数和简短评语。默认 placeholder 只按参考答案片段匹配，不理解语义。15b 起 `AI_PROVIDER=bailian` 可选择真实百炼适配器，使用文字提示词和严格结果校验；目前仅模拟验证，尚未真实调用模型。
 
 节点 08 的 `app/services/assignments.py` 统一读取作业内容及构造角色响应；新作业展示、提交评分和教师确认均使用快照。GradingService 接收独立 QuestionSnapshot，不再以题库文档作为输入契约。旧引用兼容明确标记来源，不回填为历史快照，详见 [快照说明](assignment-snapshots.md)。
 

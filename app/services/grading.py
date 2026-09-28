@@ -13,9 +13,20 @@ class TransientGradingError(Exception):
     """Adapters may use this for retryable transport, rate-limit or service failures."""
 
 
+class PermanentGradingError(ValueError):
+    def __init__(self, code: str):
+        if code not in {"provider_authentication", "provider_request_rejected", "invalid_provider_response"}:
+            raise ValueError("Unknown grading error code")
+        self.code = code
+        super().__init__(code)
+
+
 class GradingService:
     async def grade_short_answer(self, question: QuestionSnapshot, answer_text: str) -> GradeResult:
         raise NotImplementedError
+
+    async def aclose(self) -> None:
+        pass
 
 
 class PlaceholderGradingService(GradingService):
@@ -42,4 +53,13 @@ class PlaceholderGradingService(GradingService):
 
 
 def get_grading_service() -> GradingService:
-    return PlaceholderGradingService()
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    if settings.ai_provider == "placeholder":
+        return PlaceholderGradingService()
+    if settings.ai_provider == "bailian":
+        from app.services.bailian import BailianGradingService
+
+        return BailianGradingService(settings)
+    raise ValueError("Unsupported AI provider")
